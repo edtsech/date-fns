@@ -2,6 +2,7 @@
 
 import fsp from 'fs-promise'
 import path from 'path'
+import cloneDeep from 'lodash.clonedeep'
 import jsDocParser from 'jsdoc-to-markdown'
 import listFiles from './_lib/listFiles'
 import docsConfig from '../docs'
@@ -30,6 +31,11 @@ function generateDocsFromSource () {
       description: doc.summary,
       content: doc
     }))
+    .reduce((array, doc) => array
+      .concat(generateFnDoc(doc))
+      .concat(generateFPFnDoc(doc))
+      .concat(generateFPFnWithOptionsDoc(doc)),
+    [])
 
   return Promise.resolve(docs)
 }
@@ -61,9 +67,9 @@ function injectStaticDocsToDocsObj (docsFileObj) {
  */
 function injectSharedDocsToDocsObj (docsFileObj) {
   return generateSharedDocs()
-    .then((staticDocs) => {
-      staticDocs.forEach((staticDoc) => {
-        docsFileObj[staticDoc.category].push(staticDoc)
+    .then((sharedDocs) => {
+      sharedDocs.forEach((sharedDoc) => {
+        docsFileObj[sharedDoc.category].push(sharedDoc)
       })
       return docsFileObj
     })
@@ -135,8 +141,192 @@ function generateSharedDocs (sharedDocs) {
       category: doc.category,
       title: doc.name,
       description: doc.summary,
-      content: doc
+      content: doc,
+      properties: paramsToTree(doc.content.properties)
     }))
 
   return Promise.resolve(docs)
+}
+
+function generateFnDoc (dirtyDoc) {
+  const doc = cloneDeep(dirtyDoc)
+
+  const isFPFn = false
+  const {urlId, title} = doc
+  const args = paramsToTree(doc.content.params)
+
+  doc.relatedPages = {
+    default: urlId,
+    fp: `fp/${urlId}`,
+    fpWithOptions: `fp/${urlId}WithOptions`
+  }
+
+  doc.isFPFn = isFPFn
+  doc.usage = generateUsage(title, isFPFn)
+  doc.usageTabs = generateUsageTabs(isFPFn)
+  doc.args = args
+  doc.syntax = generateSyntaxString(title, args, isFPFn)
+
+  return doc
+}
+
+function generateFPFnDoc (dirtyDoc) {
+  const doc = cloneDeep(dirtyDoc)
+
+  const isFPFn = true
+  const {urlId, title} = doc
+  const exceptions = doc.content.exceptions.filter(exception => !exception.description.includes('options.'))
+  const params = doc.content.params
+    .filter((param) =>
+      !param.name.startsWith('options')
+    )
+    .map((param) => {
+      if (!param.name.includes('.')) {
+        param.optional = false
+      }
+      return param
+    })
+    .reverse()
+  const args = paramsToTree(params)
+
+  doc.relatedPages = {
+    default: urlId,
+    fp: `fp/${urlId}`,
+    fpWithOptions: `fp/${urlId}WithOptions`
+  }
+
+  doc.isFPFn = isFPFn
+  doc.urlId = `fp/${urlId}`
+  doc.content.exceptions = exceptions
+
+  doc.content.params = params
+  doc.content.examples = 'See [FP Guide](https://date-fns.org/docs/FP-Guide) for more information'
+
+  doc.usage = generateUsage(title, isFPFn)
+  doc.usageTabs = generateUsageTabs(isFPFn)
+  doc.args = args
+  doc.syntax = generateSyntaxString(title, args, isFPFn)
+
+  return doc
+}
+
+function generateFPFnWithOptionsDoc (dirtyDoc) {
+  const doc = cloneDeep(dirtyDoc)
+
+  const isFPFn = true
+  const {urlId, title} = doc
+  const params = doc.content.params
+    .map((param) => {
+      if (!param.name.includes('.')) {
+        param.optional = false
+      }
+      return param
+    })
+    .reverse()
+  const args = paramsToTree(params)
+
+  doc.relatedPages = {
+    default: urlId,
+    fp: `fp/${urlId}`,
+    fpWithOptions: `fp/${urlId}WithOptions`
+  }
+
+  doc.isFPFn = true
+  doc.urlId = `fp/${urlId}WithOptions`
+  doc.title = `${title}WithOptions`
+  doc.content.params = params
+  doc.content.id = `${doc.content.id}WithOptions`
+  doc.content.longname = `${doc.content.longname}WithOptions`
+  doc.content.name = `${doc.content.name}WithOptions`
+  doc.content.examples = 'See [FP Guide](https://date-fns.org/docs/FP-Guide) for more information'
+
+  doc.usage = generateUsage(title, isFPFn)
+  doc.usageTabs = generateUsageTabs(isFPFn)
+  doc.args = args
+  doc.syntax = generateSyntaxString(title, args, isFPFn)
+
+  return doc
+}
+
+function generateUsageTabs (isFPFn) {
+  return isFPFn ? ['commonjs', 'es2015', 'esm'] : ['commonjs', 'umd', 'es2015', 'esm']
+}
+
+function generateUsage (name, isFPFn) {
+  const moduleSuffix = isFPFn ? '/fp' : ''
+
+  let usage = {
+    commonjs: {
+      title: 'CommonJS',
+      code: `var ${name} = require('date-fns${moduleSuffix}/${name}')`
+    },
+
+    es2015: {
+      title: 'ES 2015',
+      code: `import ${name} from 'date-fns${moduleSuffix}/${name}'`
+    },
+
+    esm: {
+      title: 'ESM',
+      code: `import {${name}} from 'date-fns/esm${moduleSuffix}'`,
+      text: 'See [ECMAScript Modules guide](https://date-fns.org/docs/ECMAScript-Modules) for more information'
+    }
+  }
+
+  if (!isFPFn) {
+    usage.umd = {
+      title: 'UMD',
+      code: `var ${name} = dateFns.${name}`
+    }
+  }
+
+  return usage
+}
+
+function paramsToTree (dirtyParams) {
+  if (!dirtyParams) {
+    return null
+  }
+
+  const params = cloneDeep(dirtyParams)
+
+  const paramIndices = params
+    .reduce((result, param, index) => {
+      result[param.name] = index
+      return result
+    }, {})
+
+  return params
+    .map((param, index) => {
+      const {name, isProperty} = param
+
+      const indexOfDot = name.indexOf('.')
+
+      if (indexOfDot >= 0 && !isProperty) {
+        const parentIndex = paramIndices[name.substring(0, indexOfDot)]
+        const parent = params[parentIndex]
+
+        param.name = name.substring(indexOfDot + 1)
+        param.isProperty = true
+        if (!parent.props) {
+          parent.props = [param]
+        } else {
+          parent.props.push(param)
+        }
+      }
+
+      return param
+    })
+    .filter((param) => !param.isProperty)
+}
+
+function generateSyntaxString (name, args, isFPFn) {
+  if (isFPFn) {
+    return args.reduce((acc, arg) => acc.concat(`(${arg.name})`), name)
+  } else {
+    const argsString = args
+      .map(arg => arg.optional ? `[${arg.name}]` : arg.name)
+      .join(', ')
+    return `${name}(${argsString})`
+  }
 }
